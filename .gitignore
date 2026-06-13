@@ -1,0 +1,17 @@
+# Secrets
+.env
+
+# Local database + WAL sidecar files
+/data/
+*.db
+*.db-shm
+*.db-wal
+
+# Build output
+/jobalert
+/dist/
+
+# OS / editor cruft
+.DS_Store
+.idea/
+.vscode/

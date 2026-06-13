@@ -1,0 +1,12 @@
+.git
+.gitignore
+.env
+data/
+*.db
+*.db-shm
+*.db-wal
+dist/
+jobalert
+README.md
+roadmap.md
+*_test.go
