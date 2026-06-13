@@ -1,0 +1,168 @@
+// Package config loads and validates runtime configuration from the
+// environment. All knobs are env vars so the same binary runs unchanged on a
+// laptop, in Docker, or on a VPS. A local .env file is loaded if present
+// (convenience for development only; never commit real secrets).
+package config
+
+import (
+	"bufio"
+	"fmt"
+	"os"
+	"strings"
+	"time"
+)
+
+// Config holds every runtime setting. Secrets are kept here, never hard-coded.
+type Config struct {
+	// Secrets / endpoints
+	JSearchAPIKey    string
+	TelegramBotToken string
+	TelegramChatID   string
+
+	// Search behaviour
+	Query      string   // JSearch `query`, always includes a location term
+	Keywords   []string // local match filter against title + description
+	DatePosted string   // JSearch freshness filter: all|today|3days|week|month
+	Country    string   // optional, e.g. "fr"
+	Language   string   // optional, e.g. "fr"
+	RemoteOnly bool     // maps to work_from_home=true
+
+	// Scheduling
+	PollInterval time.Duration // ticker period; default 5h keeps us in the free tier
+	RunOnce      bool          // run a single cycle then exit (CLI / testing / cron)
+
+	// Storage
+	DBPath string
+}
+
+// Load reads configuration from the environment, applying defaults and then
+// validating. It returns an error listing every problem at once rather than
+// failing on the first, so misconfiguration is fixed in a single pass.
+func Load() (*Config, error) {
+	loadDotEnv(".env")
+
+	cfg := &Config{
+		JSearchAPIKey:    os.Getenv("JSEARCH_API_KEY"),
+		TelegramBotToken: os.Getenv("TELEGRAM_BOT_TOKEN"),
+		TelegramChatID:   os.Getenv("TELEGRAM_CHAT_ID"),
+		Query:            getEnv("JOB_QUERY", "devops engineer remote"),
+		DatePosted:       getEnv("DATE_POSTED", "today"),
+		Country:          os.Getenv("JOB_COUNTRY"),
+		Language:         os.Getenv("JOB_LANGUAGE"),
+		RemoteOnly:       getEnvBool("REMOTE_ONLY", true),
+		RunOnce:          getEnvBool("RUN_ONCE", false),
+		DBPath:           getEnv("DB_PATH", "data/jobs.db"),
+	}
+
+	cfg.Keywords = splitCSV(getEnv("KEYWORDS",
+		"devops,platform engineer,kubernetes,site reliability,react native,expo"))
+
+	interval, err := time.ParseDuration(getEnv("POLL_INTERVAL", "5h"))
+	if err != nil {
+		return nil, fmt.Errorf("POLL_INTERVAL is not a valid duration (e.g. 5h, 90m): %w", err)
+	}
+	cfg.PollInterval = interval
+
+	if err := cfg.validate(); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+func (c *Config) validate() error {
+	var missing []string
+	if c.JSearchAPIKey == "" {
+		missing = append(missing, "JSEARCH_API_KEY")
+	}
+	if c.TelegramBotToken == "" {
+		missing = append(missing, "TELEGRAM_BOT_TOKEN")
+	}
+	if c.TelegramChatID == "" {
+		missing = append(missing, "TELEGRAM_CHAT_ID")
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("missing required environment variables: %s", strings.Join(missing, ", "))
+	}
+
+	if c.PollInterval < time.Minute {
+		return fmt.Errorf("POLL_INTERVAL too small (%s); minimum is 1m to avoid burning the API quota", c.PollInterval)
+	}
+	if len(c.Keywords) == 0 {
+		return fmt.Errorf("KEYWORDS is empty; at least one keyword is required to match jobs")
+	}
+	return nil
+}
+
+// Redacted returns a log-safe summary that never exposes secrets.
+func (c *Config) Redacted() string {
+	return fmt.Sprintf(
+		"query=%q keywords=%d date_posted=%s remote_only=%t poll=%s run_once=%t db=%s country=%q",
+		c.Query, len(c.Keywords), c.DatePosted, c.RemoteOnly, c.PollInterval, c.RunOnce, c.DBPath, c.Country,
+	)
+}
+
+// --- helpers ---------------------------------------------------------------
+
+func getEnv(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
+
+func getEnvBool(key string, fallback bool) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	case "1", "true", "yes", "y", "on":
+		return true
+	case "0", "false", "no", "n", "off":
+		return false
+	default:
+		return fallback
+	}
+}
+
+func splitCSV(s string) []string {
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// loadDotEnv loads KEY=VALUE pairs from a file into the environment without
+// overriding variables already set in the real environment (real env wins).
+// Missing file is not an error. This is a minimal, dependency-free loader; it
+// supports `export KEY=val`, `#` comments, and optional single/double quotes.
+func loadDotEnv(path string) {
+	f, err := os.Open(path)
+	if err != nil {
+		return // no .env is fine
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		line = strings.TrimPrefix(line, "export ")
+		key, val, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		val = strings.TrimSpace(val)
+		if len(val) >= 2 {
+			if (val[0] == '"' && val[len(val)-1] == '"') || (val[0] == '\'' && val[len(val)-1] == '\'') {
+				val = val[1 : len(val)-1]
+			}
+		}
+		if _, exists := os.LookupEnv(key); !exists {
+			_ = os.Setenv(key, val)
+		}
+	}
+}
