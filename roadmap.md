@@ -14,11 +14,12 @@
 
 These are small, high-value items the MVP intentionally left out.
 
-- [ ] **Verify the live JSearch response shape.** The `Job` mapping follows the
-      spec in `projetct.md`. Confirm field names against a real `search-v2`
-      response — especially the enrichment fields (`seniority_level`,
-      `required_experience_years`, `required_technologies`) and the
-      `job_posted_at_datetime_utc` format. Adjust struct tags if they differ.
+- [x] **Verify the live JSearch response shape.** Done — corrected against the
+      official OpenAPI spec and a live response. Jobs are nested under
+      `data.jobs` (an object, not an array). The enrichment fields
+      (`work_arrangement`, `seniority_level`, `required_experience_years`,
+      `required_technologies`, `job_function`) do **not** exist in `search-v2` —
+      they are `/job-details` only — and were removed from the `Job` model.
 - [ ] **Retry/backoff** on JSearch 429/5xx (currently one attempt per cycle).
 - [ ] **Pagination**: follow the `cursor` when a query returns multiple pages
       (MVP fetches the first page only — fine at current volume).

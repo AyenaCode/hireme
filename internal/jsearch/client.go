@@ -1,10 +1,11 @@
 // Package jsearch is a thin client for the OpenWebNinja JSearch API
 // (search-v2 endpoint). It maps the wire response into the domain Job model.
 //
-// Note: the field mapping follows the spec in projetct.md. A few enrichment
-// fields (seniority, required experience/technologies) are best-effort and may
-// be absent or shaped differently on the live API; the MVP never depends on
-// them — matching is done on title + description. See roadmap.md.
+// Field names are verified against the official OpenAPI spec. The search-v2
+// response wraps jobs in data.jobs (an object, not an array). Enrichment fields
+// such as seniority, required experience/technologies and work arrangement are
+// NOT returned by search-v2 — they live only on the /job-details endpoint — so
+// they are intentionally absent here. Matching is done on title + description.
 package jsearch
 
 import (
@@ -30,23 +31,18 @@ type Job struct {
 	Publisher    string `json:"job_publisher"`
 
 	// where / how
-	Location    string `json:"job_location"`
-	City        string `json:"job_city"`
-	Country     string `json:"job_country"`
-	Remote      bool   `json:"job_is_remote"`
-	Arrangement string `json:"work_arrangement"`
-	EmployType  string `json:"job_employment_type"`
+	Location   string `json:"job_location"`
+	City       string `json:"job_city"`
+	Country    string `json:"job_country"`
+	Remote     bool   `json:"job_is_remote"`
+	EmployType string `json:"job_employment_type"`
 
 	// links
 	ApplyLink  string `json:"job_apply_link"`
 	GoogleLink string `json:"job_google_link"`
 
-	// content for filtering / scoring
-	Description  string   `json:"job_description"`
-	Seniority    string   `json:"seniority_level"`
-	ExpYears     int      `json:"required_experience_years"`
-	Technologies []string `json:"required_technologies"`
-	Function     string   `json:"job_function"`
+	// content for filtering
+	Description string `json:"job_description"`
 
 	// salary (often null)
 	MinSalary    *float64 `json:"job_min_salary"`
@@ -62,11 +58,15 @@ type Job struct {
 	Notified bool      `json:"-"`
 }
 
-// response is the API envelope: { "status": ..., "data": [...], "cursor": ... }.
+// response is the API envelope. Jobs are nested under data.jobs, and the
+// pagination cursor under data.cursor: { "status": ..., "data": { "jobs": [...], "cursor": ... } }.
 type response struct {
-	Status string `json:"status"`
-	Data   []Job  `json:"data"`
-	Cursor string `json:"cursor"`
+	Status    string `json:"status"`
+	RequestID string `json:"request_id"`
+	Data      struct {
+		Jobs   []Job  `json:"jobs"`
+		Cursor string `json:"cursor"`
+	} `json:"data"`
 }
 
 // SearchParams describes one search-v2 query.
@@ -143,7 +143,7 @@ func (c *Client) Search(ctx context.Context, p SearchParams) (jobs []Job, nextCu
 	if err := json.Unmarshal(body, &out); err != nil {
 		return nil, "", fmt.Errorf("decode response: %w", err)
 	}
-	return out.Data, out.Cursor, nil
+	return out.Data.Jobs, out.Data.Cursor, nil
 }
 
 func truncate(s string, n int) string {
