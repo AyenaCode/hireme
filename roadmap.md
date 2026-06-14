@@ -20,7 +20,11 @@ These are small, high-value items the MVP intentionally left out.
       (`work_arrangement`, `seniority_level`, `required_experience_years`,
       `required_technologies`, `job_function`) do **not** exist in `search-v2` —
       they are `/job-details` only — and were removed from the `Job` model.
-- [ ] **Retry/backoff** on JSearch 429/5xx (currently one attempt per cycle).
+- [x] **Retry/backoff** on JSearch 429/5xx. The `search-v2` client now retries
+      transport errors, 5xx and 429 with exponential backoff + jitter (3 retries),
+      honours a delta-seconds `Retry-After` capped at 60s (a longer hint bails to
+      the next poll cycle rather than blocking), and never retries on other 4xx
+      or context cancellation.
 - [ ] **Pagination**: follow the `cursor` when a query returns multiple pages
       (MVP fetches the first page only — fine at current volume).
 - [ ] **Quota guard**: count requests/month and refuse to exceed the free-tier

@@ -64,6 +64,10 @@ new `job_id`s (dedup is the SQLite primary key) → push each genuinely new matc
 to Telegram → mark it notified. A failed push leaves the job un-notified so it
 retries next cycle. Errors are logged; the loop never dies on a transient fault.
 
+Transient JSearch failures (network errors, 5xx, 429) are retried in-process
+with exponential backoff + jitter, honouring a `Retry-After` header up to 60s; a
+longer wait or a non-transient 4xx is left for the next poll cycle.
+
 ## Project layout
 
 ```
