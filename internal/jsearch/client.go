@@ -179,6 +179,32 @@ func (c *Client) Search(ctx context.Context, p SearchParams) (jobs []Job, nextCu
 	return nil, "", fmt.Errorf("jsearch: giving up after %d retries: %w", c.maxRetries, lastErr)
 }
 
+// SearchAll fetches up to maxPages pages by following the search-v2 cursor,
+// concatenating the jobs. It stops early when the cursor is empty (last page),
+// a page returns no jobs, or maxPages is reached. maxPages <= 1 means first
+// page only (the quota-safe default).
+//
+// On a page failure it returns the jobs gathered from earlier pages together
+// with the error, never discarding results already paid for in API quota — the
+// store dedups, so re-fetching those pages next cycle costs no extra alerts.
+func (c *Client) SearchAll(ctx context.Context, p SearchParams, maxPages int) (jobs []Job, err error) {
+	if maxPages < 1 {
+		maxPages = 1
+	}
+	for page := 0; page < maxPages; page++ {
+		batch, next, serr := c.Search(ctx, p)
+		jobs = append(jobs, batch...)
+		if serr != nil {
+			return jobs, fmt.Errorf("page %d: %w", page+1, serr)
+		}
+		if next == "" || len(batch) == 0 {
+			break // last page or empty page: nothing more to follow
+		}
+		p.Cursor = next
+	}
+	return jobs, nil
+}
+
 // doSearch performs a single attempt. retryAfter is the server-sent Retry-After
 // (0 if absent/unparseable); retryable says whether the caller should back off
 // and try again.

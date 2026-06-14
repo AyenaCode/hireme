@@ -25,8 +25,11 @@ These are small, high-value items the MVP intentionally left out.
       honours a delta-seconds `Retry-After` capped at 60s (a longer hint bails to
       the next poll cycle rather than blocking), and never retries on other 4xx
       or context cancellation.
-- [ ] **Pagination**: follow the `cursor` when a query returns multiple pages
-      (MVP fetches the first page only — fine at current volume).
+- [x] **Pagination**: `SearchAll` follows the `data.cursor` up to `MAX_PAGES`
+      pages per cycle (default `1` = first page only, quota-safe). A partial page
+      failure returns the pages already fetched rather than dropping them. Note:
+      `MAX_PAGES>1` exceeds the free tier at the default interval — see
+      `.env.example`; the Quota guard below is what makes higher values safe.
 - [ ] **Quota guard**: count requests/month and refuse to exceed the free-tier
       budget, with a warning push.
 - [ ] **Multiple queries** per cycle (e.g. one for DevOps, one for React Native)

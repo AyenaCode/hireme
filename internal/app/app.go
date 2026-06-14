@@ -69,15 +69,20 @@ func (a *App) Run(ctx context.Context) error {
 // runCycle performs a single poll: fetch → filter → save new → notify → mark.
 func (a *App) runCycle(ctx context.Context) error {
 	start := time.Now()
-	jobs, _, err := a.client.Search(ctx, jsearch.SearchParams{
+	jobs, err := a.client.SearchAll(ctx, jsearch.SearchParams{
 		Query:      a.cfg.Query,
 		RemoteOnly: a.cfg.RemoteOnly,
 		DatePosted: a.cfg.DatePosted,
 		Country:    a.cfg.Country,
 		Language:   a.cfg.Language,
-	})
+	}, a.cfg.MaxPages)
 	if err != nil {
-		return err
+		// A partial failure still hands back the pages we did fetch; process
+		// them rather than dropping real matches, and only abort if we got none.
+		if len(jobs) == 0 {
+			return err
+		}
+		a.log.Warn("partial fetch; proceeding with pages retrieved", "err", err, "fetched", len(jobs))
 	}
 
 	var matched, pushed int

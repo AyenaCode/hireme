@@ -8,6 +8,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -30,6 +31,7 @@ type Config struct {
 	// Scheduling
 	PollInterval time.Duration // ticker period; default 5h keeps us in the free tier
 	RunOnce      bool          // run a single cycle then exit (CLI / testing / cron)
+	MaxPages     int           // pages to fetch per cycle via the JSearch cursor; 1 = first page only
 
 	// Storage
 	DBPath string
@@ -63,6 +65,12 @@ func Load() (*Config, error) {
 	}
 	cfg.PollInterval = interval
 
+	pages, err := strconv.Atoi(getEnv("MAX_PAGES", "1"))
+	if err != nil {
+		return nil, fmt.Errorf("MAX_PAGES is not an integer: %w", err)
+	}
+	cfg.MaxPages = pages
+
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
@@ -90,14 +98,17 @@ func (c *Config) validate() error {
 	if len(c.Keywords) == 0 {
 		return fmt.Errorf("KEYWORDS is empty; at least one keyword is required to match jobs")
 	}
+	if c.MaxPages < 1 {
+		return fmt.Errorf("MAX_PAGES must be >= 1 (got %d)", c.MaxPages)
+	}
 	return nil
 }
 
 // Redacted returns a log-safe summary that never exposes secrets.
 func (c *Config) Redacted() string {
 	return fmt.Sprintf(
-		"query=%q keywords=%d date_posted=%s remote_only=%t poll=%s run_once=%t db=%s country=%q",
-		c.Query, len(c.Keywords), c.DatePosted, c.RemoteOnly, c.PollInterval, c.RunOnce, c.DBPath, c.Country,
+		"query=%q keywords=%d date_posted=%s remote_only=%t poll=%s run_once=%t max_pages=%d db=%s country=%q",
+		c.Query, len(c.Keywords), c.DatePosted, c.RemoteOnly, c.PollInterval, c.RunOnce, c.MaxPages, c.DBPath, c.Country,
 	)
 }
 

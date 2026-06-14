@@ -106,6 +106,75 @@ func TestSearch_GivesUpAfterMaxRetries(t *testing.T) {
 	}
 }
 
+func TestSearchAll_FollowsCursorUpToMaxPages(t *testing.T) {
+	// Three pages exist (cursors ""→"c1"→"c2"→last), but we cap at 2.
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		switch r.URL.Query().Get("cursor") {
+		case "":
+			w.Write([]byte(`{"data":{"jobs":[{"job_id":"a"}],"cursor":"c1"}}`))
+		case "c1":
+			w.Write([]byte(`{"data":{"jobs":[{"job_id":"b"}],"cursor":"c2"}}`))
+		default:
+			w.Write([]byte(`{"data":{"jobs":[{"job_id":"c"}],"cursor":""}}`))
+		}
+	}))
+	defer srv.Close()
+
+	jobs, err := newTestClient(srv.URL).SearchAll(context.Background(), SearchParams{Query: "x"}, 2)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 2 {
+		t.Fatalf("expected 2 page requests (maxPages cap), got %d", got)
+	}
+	if len(jobs) != 2 || jobs[0].JobID != "a" || jobs[1].JobID != "b" {
+		t.Fatalf("unexpected jobs: %+v", jobs)
+	}
+}
+
+func TestSearchAll_StopsOnEmptyCursor(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.Write([]byte(`{"data":{"jobs":[{"job_id":"a"}],"cursor":""}}`)) // single page
+	}))
+	defer srv.Close()
+
+	jobs, err := newTestClient(srv.URL).SearchAll(context.Background(), SearchParams{Query: "x"}, 5)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("expected 1 request (empty cursor stops early), got %d", got)
+	}
+	if len(jobs) != 1 {
+		t.Fatalf("expected 1 job, got %d", len(jobs))
+	}
+}
+
+func TestSearchAll_PartialFailureKeepsEarlierPages(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		if r.URL.Query().Get("cursor") == "" {
+			w.Write([]byte(`{"data":{"jobs":[{"job_id":"a"}],"cursor":"c1"}}`))
+			return
+		}
+		w.WriteHeader(http.StatusBadRequest) // page 2 fails permanently
+	}))
+	defer srv.Close()
+
+	jobs, err := newTestClient(srv.URL).SearchAll(context.Background(), SearchParams{Query: "x"}, 3)
+	if err == nil {
+		t.Fatal("expected an error from the failing second page")
+	}
+	if len(jobs) != 1 || jobs[0].JobID != "a" {
+		t.Fatalf("expected page 1's job to survive the failure, got %+v", jobs)
+	}
+}
+
 // Cancelling mid-backoff must interrupt the sleep, not wait it out. The server
 // returns a retryable 503 so Search proceeds into the (long) backoff sleep,
 // then we cancel during it.

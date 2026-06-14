@@ -118,8 +118,10 @@ KEYWORDS=python,airflow,spark,dbt
 > the local filter discards almost everything and you'll get no alerts.
 
 Other knobs: `DATE_POSTED` (`all`/`today`/`3days`/`week`/`month`), `REMOTE_ONLY`,
-`JOB_COUNTRY` + `JOB_LANGUAGE` (e.g. `fr`/`fr`). Today it runs **one query per
-cycle** : searching two unrelated roles at once is on the [roadmap](roadmap.md).
+`JOB_COUNTRY` + `JOB_LANGUAGE` (e.g. `fr`/`fr`), and `MAX_PAGES` (cursor pages per
+cycle, default `1`; raising it costs one request per extra page, so mind the
+free-tier budget — see [`.env.example`](.env.example)). Today it runs **one query
+per cycle** : searching two unrelated roles at once is on the [roadmap](roadmap.md).
 
 ## Run locally.
 
