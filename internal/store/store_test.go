@@ -59,3 +59,36 @@ func TestMarkNotified(t *testing.T) {
 		t.Fatalf("notified = %d, want 1", notified)
 	}
 }
+
+func TestQuota_AddAndRead(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(ctx, filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer st.Close()
+
+	// Unseen month reads as zero, not warned.
+	if used, warned, err := st.Quota(ctx, "2026-06"); err != nil || used != 0 || warned {
+		t.Fatalf("empty month: used=%d warned=%t err=%v", used, warned, err)
+	}
+
+	if used, err := st.AddRequests(ctx, "2026-06", 3); err != nil || used != 3 {
+		t.Fatalf("first add: used=%d err=%v", used, err)
+	}
+	if used, err := st.AddRequests(ctx, "2026-06", 2); err != nil || used != 5 {
+		t.Fatalf("second add accumulates: used=%d err=%v", used, err)
+	}
+	// A different month is independent.
+	if used, _, _ := st.Quota(ctx, "2026-07"); used != 0 {
+		t.Fatalf("other month should be 0, got %d", used)
+	}
+
+	if err := st.MarkQuotaWarned(ctx, "2026-06"); err != nil {
+		t.Fatalf("MarkQuotaWarned: %v", err)
+	}
+	used, warned, err := st.Quota(ctx, "2026-06")
+	if err != nil || used != 5 || !warned {
+		t.Fatalf("after warn: used=%d warned=%t err=%v (count must be preserved)", used, warned, err)
+	}
+}

@@ -92,7 +92,9 @@ present). See [`.env.example`](.env.example) for the full list. Required:
 | `TELEGRAM_CHAT_ID` | Your chat id |
 
 Key optional knobs: `JOB_QUERY`, `KEYWORDS`, `DATE_POSTED`, `POLL_INTERVAL`
-(default `5h`), `RUN_ONCE`, `DB_PATH`.
+(default `5h`), `MAX_PAGES`, `MONTHLY_REQUEST_BUDGET` (default `200`; pauses API
+calls for the rest of the month once hit, with a warning push), `RUN_ONCE`,
+`DB_PATH`.
 
 > **Free-tier note:** JSearch free = 200 requests/month. `POLL_INTERVAL=5h`
 > (~150/mo) stays inside it. Hourly polling needs the Pro plan.

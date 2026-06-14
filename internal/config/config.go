@@ -29,9 +29,10 @@ type Config struct {
 	RemoteOnly bool     // maps to work_from_home=true
 
 	// Scheduling
-	PollInterval time.Duration // ticker period; default 5h keeps us in the free tier
-	RunOnce      bool          // run a single cycle then exit (CLI / testing / cron)
-	MaxPages     int           // pages to fetch per cycle via the JSearch cursor; 1 = first page only
+	PollInterval  time.Duration // ticker period; default 5h keeps us in the free tier
+	RunOnce       bool          // run a single cycle then exit (CLI / testing / cron)
+	MaxPages      int           // pages to fetch per cycle via the JSearch cursor; 1 = first page only
+	RequestBudget int           // max JSearch requests/month before pausing; 0 = unlimited (guard off)
 
 	// Storage
 	DBPath string
@@ -71,6 +72,12 @@ func Load() (*Config, error) {
 	}
 	cfg.MaxPages = pages
 
+	budget, err := strconv.Atoi(getEnv("MONTHLY_REQUEST_BUDGET", "200"))
+	if err != nil {
+		return nil, fmt.Errorf("MONTHLY_REQUEST_BUDGET is not an integer: %w", err)
+	}
+	cfg.RequestBudget = budget
+
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
@@ -101,14 +108,17 @@ func (c *Config) validate() error {
 	if c.MaxPages < 1 {
 		return fmt.Errorf("MAX_PAGES must be >= 1 (got %d)", c.MaxPages)
 	}
+	if c.RequestBudget < 0 {
+		return fmt.Errorf("MONTHLY_REQUEST_BUDGET must be >= 0 (got %d; 0 disables the guard)", c.RequestBudget)
+	}
 	return nil
 }
 
 // Redacted returns a log-safe summary that never exposes secrets.
 func (c *Config) Redacted() string {
 	return fmt.Sprintf(
-		"query=%q keywords=%d date_posted=%s remote_only=%t poll=%s run_once=%t max_pages=%d db=%s country=%q",
-		c.Query, len(c.Keywords), c.DatePosted, c.RemoteOnly, c.PollInterval, c.RunOnce, c.MaxPages, c.DBPath, c.Country,
+		"query=%q keywords=%d date_posted=%s remote_only=%t poll=%s run_once=%t max_pages=%d req_budget=%d db=%s country=%q",
+		c.Query, len(c.Keywords), c.DatePosted, c.RemoteOnly, c.PollInterval, c.RunOnce, c.MaxPages, c.RequestBudget, c.DBPath, c.Country,
 	)
 }
 

@@ -122,7 +122,7 @@ func TestSearchAll_FollowsCursorUpToMaxPages(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	jobs, err := newTestClient(srv.URL).SearchAll(context.Background(), SearchParams{Query: "x"}, 2)
+	jobs, _, err := newTestClient(srv.URL).SearchAll(context.Background(), SearchParams{Query: "x"}, 2)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -142,7 +142,7 @@ func TestSearchAll_StopsOnEmptyCursor(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	jobs, err := newTestClient(srv.URL).SearchAll(context.Background(), SearchParams{Query: "x"}, 5)
+	jobs, _, err := newTestClient(srv.URL).SearchAll(context.Background(), SearchParams{Query: "x"}, 5)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -166,7 +166,7 @@ func TestSearchAll_PartialFailureKeepsEarlierPages(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	jobs, err := newTestClient(srv.URL).SearchAll(context.Background(), SearchParams{Query: "x"}, 3)
+	jobs, _, err := newTestClient(srv.URL).SearchAll(context.Background(), SearchParams{Query: "x"}, 3)
 	if err == nil {
 		t.Fatal("expected an error from the failing second page")
 	}

@@ -6,6 +6,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -19,12 +20,20 @@ import (
 // can be swapped/mocked — e.g. add Expo push later).
 type notifier interface {
 	SendJob(ctx context.Context, j jsearch.Job) error
+	SendText(ctx context.Context, text string) error
+}
+
+// searcher is the behaviour the app needs from a job source, returning the jobs
+// and the number of API requests consumed against the monthly quota. Kept small
+// so a second source can sit behind it later (RemoteOK, ATS endpoints).
+type searcher interface {
+	SearchAll(ctx context.Context, p jsearch.SearchParams, maxPages int) ([]jsearch.Job, int, error)
 }
 
 // App holds collaborators and config.
 type App struct {
 	cfg    *config.Config
-	client *jsearch.Client
+	client searcher
 	store  *store.Store
 	filter *filter.Filter
 	notify notifier
@@ -32,7 +41,7 @@ type App struct {
 }
 
 // New constructs an App from its dependencies.
-func New(cfg *config.Config, client *jsearch.Client, st *store.Store, f *filter.Filter, n notifier, log *slog.Logger) *App {
+func New(cfg *config.Config, client searcher, st *store.Store, f *filter.Filter, n notifier, log *slog.Logger) *App {
 	return &App{cfg: cfg, client: client, store: st, filter: f, notify: n, log: log}
 }
 
@@ -69,21 +78,57 @@ func (a *App) Run(ctx context.Context) error {
 // runCycle performs a single poll: fetch → filter → save new → notify → mark.
 func (a *App) runCycle(ctx context.Context) error {
 	start := time.Now()
-	jobs, err := a.client.SearchAll(ctx, jsearch.SearchParams{
+
+	// Quota guard: refuse to exceed the monthly free-tier budget. The counter is
+	// keyed by calendar (UTC) month, which is an approximation of the provider's
+	// reset — good enough to prevent runaway consumption.
+	month := time.Now().UTC().Format("2006-01")
+	budget := a.cfg.RequestBudget
+	used, warned, qerr := a.store.Quota(ctx, month)
+	if qerr != nil {
+		// Fail open: a stuck counter must not silently halt alerting. Log loudly
+		// and proceed this cycle without enforcing the budget.
+		a.log.Error("quota read failed; skipping budget check this cycle", "err", qerr)
+		used, warned = 0, true
+	}
+	if budget > 0 && used >= budget {
+		warned = a.warnQuotaOnce(ctx, month, used, budget, warned)
+		a.log.Warn("monthly request budget reached; skipping cycle", "used", used, "budget", budget)
+		return nil
+	}
+
+	jobs, requests, err := a.client.SearchAll(ctx, jsearch.SearchParams{
 		Query:      a.cfg.Query,
 		RemoteOnly: a.cfg.RemoteOnly,
 		DatePosted: a.cfg.DatePosted,
 		Country:    a.cfg.Country,
 		Language:   a.cfg.Language,
 	}, a.cfg.MaxPages)
+
+	// Record usage BEFORE branching on err: those requests cost quota whether
+	// the cycle succeeded or failed (retry-heavy cycles are exactly the costly
+	// ones), so they must always be counted.
+	if requests > 0 {
+		if newUsed, aerr := a.store.AddRequests(ctx, month, requests); aerr != nil {
+			a.log.Error("record request usage failed", "err", aerr)
+		} else {
+			used = newUsed
+		}
+	}
+
 	if err != nil {
 		// A partial failure still hands back the pages we did fetch; process
 		// them rather than dropping real matches, and only abort if we got none.
 		if len(jobs) == 0 {
+			a.warnQuotaOnce(ctx, month, used, budget, warned)
 			return err
 		}
 		a.log.Warn("partial fetch; proceeding with pages retrieved", "err", err, "fetched", len(jobs))
 	}
+
+	// Warn as soon as this cycle pushes us to/over budget, so the heads-up lands
+	// now rather than only when the next cycle is skipped.
+	a.warnQuotaOnce(ctx, month, used, budget, warned)
 
 	var matched, pushed int
 	for _, j := range jobs {
@@ -126,6 +171,27 @@ func (a *App) runCycle(ctx context.Context) error {
 
 	a.log.Info("cycle complete",
 		"fetched", len(jobs), "matched", matched, "new_pushed", pushed,
+		"used", used, "budget", budget,
 		"took", time.Since(start).Round(time.Millisecond))
 	return nil
+}
+
+// warnQuotaOnce pushes a single over-budget warning per month. It is a no-op
+// when the guard is off, we're under budget, or the warning was already sent.
+// It returns the (possibly updated) warned flag. A failed push is not marked,
+// so it is retried next cycle.
+func (a *App) warnQuotaOnce(ctx context.Context, month string, used, budget int, warned bool) bool {
+	if budget <= 0 || used < budget || warned {
+		return warned
+	}
+	msg := fmt.Sprintf("⚠️ JSearch monthly request budget reached: %d/%d used. "+
+		"Pausing API calls until the next month's reset.", used, budget)
+	if err := a.notify.SendText(ctx, msg); err != nil {
+		a.log.Error("quota warning push failed", "err", err)
+		return false
+	}
+	if err := a.store.MarkQuotaWarned(ctx, month); err != nil {
+		a.log.Error("mark quota warned failed", "err", err)
+	}
+	return true
 }

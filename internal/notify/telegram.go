@@ -54,6 +54,13 @@ func (t *Telegram) SendJob(ctx context.Context, j jsearch.Job) error {
 	return t.send(ctx, formatJob(j))
 }
 
+// SendText sends a plain operational message (e.g. a quota warning) to the chat.
+// The caller must pre-escape any HTML-special characters it does not intend as
+// markup; the strings we pass are static and contain none.
+func (t *Telegram) SendText(ctx context.Context, text string) error {
+	return t.send(ctx, text)
+}
+
 func (t *Telegram) send(ctx context.Context, text string) error {
 	if len(text) > maxMessageLen {
 		text = text[:maxMessageLen]

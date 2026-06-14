@@ -30,8 +30,13 @@ These are small, high-value items the MVP intentionally left out.
       failure returns the pages already fetched rather than dropping them. Note:
       `MAX_PAGES>1` exceeds the free tier at the default interval — see
       `.env.example`; the Quota guard below is what makes higher values safe.
-- [ ] **Quota guard**: count requests/month and refuse to exceed the free-tier
-      budget, with a warning push.
+- [x] **Quota guard**: JSearch requests are counted per calendar (UTC) month in
+      SQLite (survives restarts). When usage reaches `MONTHLY_REQUEST_BUDGET`
+      (default 200 = free tier; `0` disables) the cycle is skipped and one
+      warning is pushed to Telegram — once per month, persisted so a restart
+      doesn't re-spam. Usage is recorded even on failed cycles (those requests
+      still cost quota); the month boundary is an approximation of the provider's
+      reset, which is fine for runaway-prevention.
 - [ ] **Multiple queries** per cycle (e.g. one for DevOps, one for React Native)
       with per-query keyword sets — mind the request budget.
 - [ ] **Healthcheck / liveness** endpoint or heartbeat log for the VPS.

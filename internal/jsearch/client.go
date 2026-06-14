@@ -187,22 +187,26 @@ func (c *Client) Search(ctx context.Context, p SearchParams) (jobs []Job, nextCu
 // On a page failure it returns the jobs gathered from earlier pages together
 // with the error, never discarding results already paid for in API quota — the
 // store dedups, so re-fetching those pages next cycle costs no extra alerts.
-func (c *Client) SearchAll(ctx context.Context, p SearchParams, maxPages int) (jobs []Job, err error) {
+// requests is the number of API requests this call consumed against the monthly
+// quota — one per page fetched. Internal retries within a page are not counted
+// (drift <= maxRetries per failed page), which is immaterial for a budget guard.
+func (c *Client) SearchAll(ctx context.Context, p SearchParams, maxPages int) (jobs []Job, requests int, err error) {
 	if maxPages < 1 {
 		maxPages = 1
 	}
 	for page := 0; page < maxPages; page++ {
 		batch, next, serr := c.Search(ctx, p)
+		requests++ // a page was requested whether or not it succeeded
 		jobs = append(jobs, batch...)
 		if serr != nil {
-			return jobs, fmt.Errorf("page %d: %w", page+1, serr)
+			return jobs, requests, fmt.Errorf("page %d: %w", page+1, serr)
 		}
 		if next == "" || len(batch) == 0 {
 			break // last page or empty page: nothing more to follow
 		}
 		p.Cursor = next
 	}
-	return jobs, nil
+	return jobs, requests, nil
 }
 
 // doSearch performs a single attempt. retryAfter is the server-sent Retry-After
