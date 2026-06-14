@@ -43,6 +43,9 @@ type Config struct {
 
 	// Storage
 	DBPath string
+
+	// Ops
+	HealthAddr string // listen address for the /healthz liveness endpoint; empty = disabled
 }
 
 // Load reads configuration from the environment, applying defaults and then
@@ -62,6 +65,7 @@ func Load() (*Config, error) {
 		RemoteOnly:       getEnvBool("REMOTE_ONLY", true),
 		RunOnce:          getEnvBool("RUN_ONCE", false),
 		DBPath:           getEnv("DB_PATH", "data/jobs.db"),
+		HealthAddr:       os.Getenv("HEALTH_ADDR"),
 	}
 
 	interval, err := time.ParseDuration(getEnv("POLL_INTERVAL", "5h"))
@@ -155,8 +159,8 @@ func (c *Config) Redacted() string {
 		searches[i] = fmt.Sprintf("%q(kw=%d)", s.Query, len(s.Keywords))
 	}
 	return fmt.Sprintf(
-		"searches=[%s] date_posted=%s remote_only=%t poll=%s run_once=%t max_pages=%d req_budget=%d db=%s country=%q",
-		strings.Join(searches, ", "), c.DatePosted, c.RemoteOnly, c.PollInterval, c.RunOnce, c.MaxPages, c.RequestBudget, c.DBPath, c.Country,
+		"searches=[%s] date_posted=%s remote_only=%t poll=%s run_once=%t max_pages=%d req_budget=%d db=%s country=%q health_addr=%q",
+		strings.Join(searches, ", "), c.DatePosted, c.RemoteOnly, c.PollInterval, c.RunOnce, c.MaxPages, c.RequestBudget, c.DBPath, c.Country, c.HealthAddr,
 	)
 }
 

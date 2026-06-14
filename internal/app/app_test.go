@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"path/filepath"
@@ -12,6 +13,8 @@ import (
 	"hireme/internal/jsearch"
 	"hireme/internal/store"
 )
+
+var errFake = errors.New("fake search failure")
 
 // mockNotifier records what was pushed without hitting the network.
 type mockNotifier struct {
@@ -139,6 +142,31 @@ func TestRunCycle_CountsUsageAndWarnsOnCrossing(t *testing.T) {
 	}
 	if len(mock.texts) != 1 {
 		t.Fatalf("warning must fire once, got %d", len(mock.texts))
+	}
+}
+
+// The heartbeat fires once per cycle even when every query fails — liveness
+// reflects that the loop turned, not that fetches succeeded.
+func TestRunCycle_HeartbeatFiresEvenOnFailure(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer st.Close()
+
+	cfg := &config.Config{Searches: oneSearch("devops", "devops"), MaxPages: 1}
+	src := &fakeSearcher{requests: 1, err: errFake} // every query fails
+	a := New(cfg, src, st, &mockNotifier{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	var beats int
+	a.SetHeartbeat(func() { beats++ })
+
+	if err := a.runCycle(ctx); err != nil {
+		t.Fatalf("runCycle: %v", err)
+	}
+	if beats != 1 {
+		t.Fatalf("expected 1 heartbeat despite query failure, got %d", beats)
 	}
 }
 

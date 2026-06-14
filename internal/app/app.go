@@ -38,12 +38,13 @@ type compiledSearch struct {
 
 // App holds collaborators and config.
 type App struct {
-	cfg      *config.Config
-	client   searcher
-	store    *store.Store
-	searches []compiledSearch
-	notify   notifier
-	log      *slog.Logger
+	cfg       *config.Config
+	client    searcher
+	store     *store.Store
+	searches  []compiledSearch
+	notify    notifier
+	log       *slog.Logger
+	heartbeat func() // optional liveness signal, fired at the end of every cycle
 }
 
 // New constructs an App from its dependencies, compiling one search (query +
@@ -65,6 +66,11 @@ func New(cfg *config.Config, client searcher, st *store.Store, n notifier, log *
 	}
 	return &App{cfg: cfg, client: client, store: st, searches: searches, notify: n, log: log}
 }
+
+// SetHeartbeat registers a callback fired at the end of every cycle. Used to
+// drive the liveness endpoint; leaving it unset is fine (the app just won't
+// signal). Set it before Run.
+func (a *App) SetHeartbeat(beat func()) { a.heartbeat = beat }
 
 // Run executes one cycle immediately, then (unless RunOnce) ticks every
 // PollInterval until the context is cancelled.
@@ -130,17 +136,27 @@ func (a *App) runCycle(ctx context.Context) error {
 		jobs, requests, err := a.client.SearchAll(ctx, s.params, a.cfg.MaxPages)
 		// Record usage BEFORE branching on err: those requests cost quota whether
 		// the query succeeded or failed (retry-heavy queries are the costly ones).
+		// Use a detached context so a shutdown mid-cycle still persists what we
+		// spent instead of erroring on the cancelled request context.
 		if requests > 0 {
-			if newUsed, aerr := a.store.AddRequests(ctx, month, requests); aerr != nil {
+			recCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			if newUsed, aerr := a.store.AddRequests(recCtx, month, requests); aerr != nil {
 				a.log.Error("record request usage failed", "err", aerr)
 			} else {
 				used = newUsed
 			}
+			cancel()
 		}
 		// Warn as soon as usage reaches budget, so the heads-up lands now.
 		warned = a.warnQuotaOnce(ctx, month, used, budget, warned)
 
 		if err != nil {
+			// Shutdown cancelled the request mid-flight: that's expected, not a
+			// failure — stop the cycle quietly rather than logging an error.
+			if ctx.Err() != nil {
+				a.log.Info("cycle interrupted by shutdown", "query", s.params.Query)
+				break
+			}
 			// A partial failure still hands back the pages we did fetch; use them
 			// rather than dropping real matches. With nothing, log and move on to
 			// the next query instead of aborting the whole cycle.
@@ -156,6 +172,13 @@ func (a *App) runCycle(ctx context.Context) error {
 		m, p := a.processJobs(ctx, jobs, s.filter)
 		matched += m
 		pushed += p
+	}
+
+	// Liveness: signal unconditionally — the loop turned, even if every query
+	// failed. The probe only cares that we're not wedged, not that fetches
+	// succeeded (a restart can't fix an upstream outage).
+	if a.heartbeat != nil {
+		a.heartbeat()
 	}
 
 	a.log.Info("cycle complete",

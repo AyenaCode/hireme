@@ -94,7 +94,7 @@ present). See [`.env.example`](.env.example) for the full list. Required:
 Key optional knobs: `JOB_QUERY`, `KEYWORDS`, `DATE_POSTED`, `POLL_INTERVAL`
 (default `5h`), `MAX_PAGES`, `MONTHLY_REQUEST_BUDGET` (default `200`; pauses API
 calls for the rest of the month once hit, with a warning push), `RUN_ONCE`,
-`DB_PATH`.
+`DB_PATH`, `HEALTH_ADDR` (enable the `/healthz` liveness endpoint, e.g. `:8080`).
 
 > **Free-tier note:** JSearch free = 200 requests/month. `POLL_INTERVAL=5h`
 > (~150/mo) stays inside it. Hourly polling needs the Pro plan.
@@ -169,6 +169,14 @@ docker run -d --name hireme \
 
 The image is built `CGO_ENABLED=0` on `distroless/static` (nonroot): no shell,
 CA certs included, a few MB. The SQLite file lives on the `/data` volume.
+
+It also exposes a `/healthz` liveness endpoint on `:8080` and ships a Docker
+`HEALTHCHECK` that probes it via `jobalert -healthcheck` (the binary self-probes,
+since distroless has no shell or curl). `/healthz` is **liveness only** — it
+reports 200 as long as the poll loop keeps completing cycles and 503 if the loop
+is wedged; it deliberately stays green during a JSearch outage or quota pause, so
+an orchestrator (k8s `httpGet` probe, etc.) never restarts the process over a
+problem a restart can't fix.
 
 ## Test
 

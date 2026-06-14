@@ -42,7 +42,12 @@ These are small, high-value items the MVP intentionally left out.
       `KEYWORDS_n` (contiguous from 1; falls back to the single `JOB_QUERY` /
       `KEYWORDS` for backward compatibility). The quota guard is checked before
       every query, so a multi-query cycle stops the moment the budget is reached.
-- [ ] **Healthcheck / liveness** endpoint or heartbeat log for the VPS.
+- [x] **Healthcheck / liveness** endpoint. `HEALTH_ADDR` (e.g. `:8080`) enables a
+      `/healthz` endpoint that returns 200 while cycles keep completing and 503 if
+      the loop is wedged (no cycle within `2×POLL_INTERVAL`). Liveness reflects
+      only that the loop turns — it stays green during JSearch/quota failures so a
+      probe never crash-loops the process on an upstream outage. The distroless
+      image self-probes via `jobalert -healthcheck` (no shell needed).
 - [x] **Structured config for keywords per role** instead of one flat list.
       Covered by the numbered `JOB_QUERY_n` / `KEYWORDS_n` pairs above — each role
       now carries its own keyword set.
