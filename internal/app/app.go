@@ -30,19 +30,40 @@ type searcher interface {
 	SearchAll(ctx context.Context, p jsearch.SearchParams, maxPages int) ([]jsearch.Job, int, error)
 }
 
-// App holds collaborators and config.
-type App struct {
-	cfg    *config.Config
-	client searcher
-	store  *store.Store
+// compiledSearch pairs a ready-to-send query with the filter for its results.
+type compiledSearch struct {
+	params jsearch.SearchParams
 	filter *filter.Filter
-	notify notifier
-	log    *slog.Logger
 }
 
-// New constructs an App from its dependencies.
-func New(cfg *config.Config, client searcher, st *store.Store, f *filter.Filter, n notifier, log *slog.Logger) *App {
-	return &App{cfg: cfg, client: client, store: st, filter: f, notify: n, log: log}
+// App holds collaborators and config.
+type App struct {
+	cfg      *config.Config
+	client   searcher
+	store    *store.Store
+	searches []compiledSearch
+	notify   notifier
+	log      *slog.Logger
+}
+
+// New constructs an App from its dependencies, compiling one search (query +
+// keyword filter) per configured entry; the freshness/remote/locale knobs are
+// shared across them.
+func New(cfg *config.Config, client searcher, st *store.Store, n notifier, log *slog.Logger) *App {
+	searches := make([]compiledSearch, len(cfg.Searches))
+	for i, s := range cfg.Searches {
+		searches[i] = compiledSearch{
+			params: jsearch.SearchParams{
+				Query:      s.Query,
+				RemoteOnly: cfg.RemoteOnly,
+				DatePosted: cfg.DatePosted,
+				Country:    cfg.Country,
+				Language:   cfg.Language,
+			},
+			filter: filter.New(s.Keywords),
+		}
+	}
+	return &App{cfg: cfg, client: client, store: st, searches: searches, notify: n, log: log}
 }
 
 // Run executes one cycle immediately, then (unless RunOnce) ticks every
@@ -75,13 +96,15 @@ func (a *App) Run(ctx context.Context) error {
 	}
 }
 
-// runCycle performs a single poll: fetch → filter → save new → notify → mark.
+// runCycle performs a single poll: for each configured search, fetch → filter →
+// save new → notify → mark. A failed query is logged and the cycle moves to the
+// next one. The monthly quota guard is checked before every query, so a cycle
+// with several searches stops as soon as the budget is reached.
 func (a *App) runCycle(ctx context.Context) error {
 	start := time.Now()
 
-	// Quota guard: refuse to exceed the monthly free-tier budget. The counter is
-	// keyed by calendar (UTC) month, which is an approximation of the provider's
-	// reset — good enough to prevent runaway consumption.
+	// Quota counter is keyed by calendar (UTC) month — an approximation of the
+	// provider's reset, good enough to prevent runaway consumption.
 	month := time.Now().UTC().Format("2006-01")
 	budget := a.cfg.RequestBudget
 	used, warned, qerr := a.store.Quota(ctx, month)
@@ -91,51 +114,66 @@ func (a *App) runCycle(ctx context.Context) error {
 		a.log.Error("quota read failed; skipping budget check this cycle", "err", qerr)
 		used, warned = 0, true
 	}
-	if budget > 0 && used >= budget {
+
+	var fetched, matched, pushed int
+	for _, s := range a.searches {
+		if ctx.Err() != nil {
+			break // graceful shutdown: stop before starting another query
+		}
+		if budget > 0 && used >= budget {
+			warned = a.warnQuotaOnce(ctx, month, used, budget, warned)
+			a.log.Warn("monthly request budget reached; skipping remaining queries",
+				"used", used, "budget", budget, "query", s.params.Query)
+			break
+		}
+
+		jobs, requests, err := a.client.SearchAll(ctx, s.params, a.cfg.MaxPages)
+		// Record usage BEFORE branching on err: those requests cost quota whether
+		// the query succeeded or failed (retry-heavy queries are the costly ones).
+		if requests > 0 {
+			if newUsed, aerr := a.store.AddRequests(ctx, month, requests); aerr != nil {
+				a.log.Error("record request usage failed", "err", aerr)
+			} else {
+				used = newUsed
+			}
+		}
+		// Warn as soon as usage reaches budget, so the heads-up lands now.
 		warned = a.warnQuotaOnce(ctx, month, used, budget, warned)
-		a.log.Warn("monthly request budget reached; skipping cycle", "used", used, "budget", budget)
-		return nil
-	}
 
-	jobs, requests, err := a.client.SearchAll(ctx, jsearch.SearchParams{
-		Query:      a.cfg.Query,
-		RemoteOnly: a.cfg.RemoteOnly,
-		DatePosted: a.cfg.DatePosted,
-		Country:    a.cfg.Country,
-		Language:   a.cfg.Language,
-	}, a.cfg.MaxPages)
-
-	// Record usage BEFORE branching on err: those requests cost quota whether
-	// the cycle succeeded or failed (retry-heavy cycles are exactly the costly
-	// ones), so they must always be counted.
-	if requests > 0 {
-		if newUsed, aerr := a.store.AddRequests(ctx, month, requests); aerr != nil {
-			a.log.Error("record request usage failed", "err", aerr)
-		} else {
-			used = newUsed
+		if err != nil {
+			// A partial failure still hands back the pages we did fetch; use them
+			// rather than dropping real matches. With nothing, log and move on to
+			// the next query instead of aborting the whole cycle.
+			if len(jobs) == 0 {
+				a.log.Error("query failed", "query", s.params.Query, "err", err)
+				continue
+			}
+			a.log.Warn("partial fetch; proceeding with pages retrieved",
+				"query", s.params.Query, "err", err, "fetched", len(jobs))
 		}
+
+		fetched += len(jobs)
+		m, p := a.processJobs(ctx, jobs, s.filter)
+		matched += m
+		pushed += p
 	}
 
-	if err != nil {
-		// A partial failure still hands back the pages we did fetch; process
-		// them rather than dropping real matches, and only abort if we got none.
-		if len(jobs) == 0 {
-			a.warnQuotaOnce(ctx, month, used, budget, warned)
-			return err
-		}
-		a.log.Warn("partial fetch; proceeding with pages retrieved", "err", err, "fetched", len(jobs))
-	}
+	a.log.Info("cycle complete",
+		"queries", len(a.searches), "fetched", fetched, "matched", matched, "new_pushed", pushed,
+		"used", used, "budget", budget,
+		"took", time.Since(start).Round(time.Millisecond))
+	return nil
+}
 
-	// Warn as soon as this cycle pushes us to/over budget, so the heads-up lands
-	// now rather than only when the next cycle is skipped.
-	a.warnQuotaOnce(ctx, month, used, budget, warned)
-
-	var matched, pushed int
+// processJobs filters a page of jobs and pushes genuinely new matches, returning
+// how many matched and how many were pushed. Dedup across queries is free: a job
+// matched by two searches hits SaveNew twice and the second insert is a no-op.
+func (a *App) processJobs(ctx context.Context, jobs []jsearch.Job, f *filter.Filter) (matched, pushed int) {
 	for _, j := range jobs {
 		if j.JobID == "" {
 			continue
 		}
-		ok, kw := a.filter.Match(j)
+		ok, kw := f.Match(j)
 		if !ok {
 			continue
 		}
@@ -147,7 +185,7 @@ func (a *App) runCycle(ctx context.Context) error {
 			continue
 		}
 		if !isNew {
-			continue // already seen on a previous cycle
+			continue // already seen on a previous cycle (or an earlier query)
 		}
 
 		if err := a.notify.SendJob(ctx, j); err != nil {
@@ -164,16 +202,11 @@ func (a *App) runCycle(ctx context.Context) error {
 		// Gentle pace under Telegram's per-chat rate limit (~1 msg/sec).
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return matched, pushed
 		case <-time.After(time.Second):
 		}
 	}
-
-	a.log.Info("cycle complete",
-		"fetched", len(jobs), "matched", matched, "new_pushed", pushed,
-		"used", used, "budget", budget,
-		"took", time.Since(start).Round(time.Millisecond))
-	return nil
+	return matched, pushed
 }
 
 // warnQuotaOnce pushes a single over-budget warning per month. It is a no-op

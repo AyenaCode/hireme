@@ -37,10 +37,15 @@ These are small, high-value items the MVP intentionally left out.
       doesn't re-spam. Usage is recorded even on failed cycles (those requests
       still cost quota); the month boundary is an approximation of the provider's
       reset, which is fine for runaway-prevention.
-- [ ] **Multiple queries** per cycle (e.g. one for DevOps, one for React Native)
-      with per-query keyword sets — mind the request budget.
+- [x] **Multiple queries** per cycle (e.g. one for DevOps, one for React Native)
+      with per-query keyword sets. Configured via numbered `JOB_QUERY_n` /
+      `KEYWORDS_n` (contiguous from 1; falls back to the single `JOB_QUERY` /
+      `KEYWORDS` for backward compatibility). The quota guard is checked before
+      every query, so a multi-query cycle stops the moment the budget is reached.
 - [ ] **Healthcheck / liveness** endpoint or heartbeat log for the VPS.
-- [ ] **Structured config for keywords per role** instead of one flat list.
+- [x] **Structured config for keywords per role** instead of one flat list.
+      Covered by the numbered `JOB_QUERY_n` / `KEYWORDS_n` pairs above — each role
+      now carries its own keyword set.
 
 ## 🚀 V2 — more sources
 

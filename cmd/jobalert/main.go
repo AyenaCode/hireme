@@ -14,7 +14,6 @@ import (
 
 	"hireme/internal/app"
 	"hireme/internal/config"
-	"hireme/internal/filter"
 	"hireme/internal/jsearch"
 	"hireme/internal/notify"
 	"hireme/internal/store"
@@ -53,8 +52,7 @@ func run(log *slog.Logger) error {
 	defer st.Close()
 
 	client := jsearch.New(cfg.JSearchAPIKey)
-	flt := filter.New(cfg.Keywords)
 	tg := notify.New(cfg.TelegramBotToken, cfg.TelegramChatID)
 
-	return app.New(cfg, client, st, flt, tg, log).Run(ctx)
+	return app.New(cfg, client, st, tg, log).Run(ctx)
 }

@@ -13,6 +13,14 @@ import (
 	"time"
 )
 
+// Search is one query plus the local keyword filter applied to its results.
+// Multiple searches run per cycle (e.g. one for DevOps, one for React Native),
+// each with its own keyword set; the freshness/remote/locale knobs are shared.
+type Search struct {
+	Query    string   // JSearch `query`, always includes a location term
+	Keywords []string // local match filter against title + description
+}
+
 // Config holds every runtime setting. Secrets are kept here, never hard-coded.
 type Config struct {
 	// Secrets / endpoints
@@ -21,8 +29,7 @@ type Config struct {
 	TelegramChatID   string
 
 	// Search behaviour
-	Query      string   // JSearch `query`, always includes a location term
-	Keywords   []string // local match filter against title + description
+	Searches   []Search // one or more (query, keywords) pairs run each cycle
 	DatePosted string   // JSearch freshness filter: all|today|3days|week|month
 	Country    string   // optional, e.g. "fr"
 	Language   string   // optional, e.g. "fr"
@@ -48,7 +55,7 @@ func Load() (*Config, error) {
 		JSearchAPIKey:    os.Getenv("JSEARCH_API_KEY"),
 		TelegramBotToken: os.Getenv("TELEGRAM_BOT_TOKEN"),
 		TelegramChatID:   os.Getenv("TELEGRAM_CHAT_ID"),
-		Query:            getEnv("JOB_QUERY", "devops engineer remote"),
+		Searches:         loadSearches(),
 		DatePosted:       getEnv("DATE_POSTED", "today"),
 		Country:          os.Getenv("JOB_COUNTRY"),
 		Language:         os.Getenv("JOB_LANGUAGE"),
@@ -56,9 +63,6 @@ func Load() (*Config, error) {
 		RunOnce:          getEnvBool("RUN_ONCE", false),
 		DBPath:           getEnv("DB_PATH", "data/jobs.db"),
 	}
-
-	cfg.Keywords = splitCSV(getEnv("KEYWORDS",
-		"devops,platform engineer,kubernetes,site reliability,react native,expo"))
 
 	interval, err := time.ParseDuration(getEnv("POLL_INTERVAL", "5h"))
 	if err != nil {
@@ -102,8 +106,16 @@ func (c *Config) validate() error {
 	if c.PollInterval < time.Minute {
 		return fmt.Errorf("POLL_INTERVAL too small (%s); minimum is 1m to avoid burning the API quota", c.PollInterval)
 	}
-	if len(c.Keywords) == 0 {
-		return fmt.Errorf("KEYWORDS is empty; at least one keyword is required to match jobs")
+	if len(c.Searches) == 0 {
+		return fmt.Errorf("no search configured; set JOB_QUERY (+ KEYWORDS) or JOB_QUERY_1 (+ KEYWORDS_1), …")
+	}
+	for i, s := range c.Searches {
+		if s.Query == "" {
+			return fmt.Errorf("search #%d has an empty query", i+1)
+		}
+		if len(s.Keywords) == 0 {
+			return fmt.Errorf("search #%d (query %q) has no keywords; set KEYWORDS_%d", i+1, s.Query, i+1)
+		}
 	}
 	if c.MaxPages < 1 {
 		return fmt.Errorf("MAX_PAGES must be >= 1 (got %d)", c.MaxPages)
@@ -114,11 +126,37 @@ func (c *Config) validate() error {
 	return nil
 }
 
+// loadSearches reads the search list. Numbered vars (JOB_QUERY_1 + KEYWORDS_1,
+// JOB_QUERY_2 + …) take precedence and are scanned contiguously until the first
+// gap. If none are set it falls back to the legacy single JOB_QUERY + KEYWORDS
+// (with the historical defaults), so existing deployments are unchanged.
+func loadSearches() []Search {
+	var out []Search
+	for i := 1; ; i++ {
+		q := strings.TrimSpace(os.Getenv(fmt.Sprintf("JOB_QUERY_%d", i)))
+		if q == "" {
+			break
+		}
+		out = append(out, Search{Query: q, Keywords: splitCSV(os.Getenv(fmt.Sprintf("KEYWORDS_%d", i)))})
+	}
+	if len(out) > 0 {
+		return out
+	}
+	return []Search{{
+		Query:    getEnv("JOB_QUERY", "devops engineer remote"),
+		Keywords: splitCSV(getEnv("KEYWORDS", "devops,platform engineer,kubernetes,site reliability,react native,expo")),
+	}}
+}
+
 // Redacted returns a log-safe summary that never exposes secrets.
 func (c *Config) Redacted() string {
+	searches := make([]string, len(c.Searches))
+	for i, s := range c.Searches {
+		searches[i] = fmt.Sprintf("%q(kw=%d)", s.Query, len(s.Keywords))
+	}
 	return fmt.Sprintf(
-		"query=%q keywords=%d date_posted=%s remote_only=%t poll=%s run_once=%t max_pages=%d req_budget=%d db=%s country=%q",
-		c.Query, len(c.Keywords), c.DatePosted, c.RemoteOnly, c.PollInterval, c.RunOnce, c.MaxPages, c.RequestBudget, c.DBPath, c.Country,
+		"searches=[%s] date_posted=%s remote_only=%t poll=%s run_once=%t max_pages=%d req_budget=%d db=%s country=%q",
+		strings.Join(searches, ", "), c.DatePosted, c.RemoteOnly, c.PollInterval, c.RunOnce, c.MaxPages, c.RequestBudget, c.DBPath, c.Country,
 	)
 }
 

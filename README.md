@@ -119,11 +119,29 @@ KEYWORDS=python,airflow,spark,dbt
 > Keep the two in sync : if `JOB_QUERY` and `KEYWORDS` describe different jobs,
 > the local filter discards almost everything and you'll get no alerts.
 
+### Several roles at once
+
+To watch more than one role per cycle, use numbered pairs instead of the single
+`JOB_QUERY`/`KEYWORDS` — each query carries its **own** keyword filter:
+
+```bash
+JOB_QUERY_1=devops engineer remote
+KEYWORDS_1=devops,kubernetes,platform engineer
+JOB_QUERY_2=react native developer remote
+KEYWORDS_2=react native,expo
+```
+
+Number them contiguously from `1` (the scan stops at the first gap); when any
+`JOB_QUERY_1` is set the numbered list replaces the single-query vars. Each query
+is a separate API call, so **N queries use ~N× the requests** — the
+`MONTHLY_REQUEST_BUDGET` guard pauses calls once the budget is reached, so a
+multi-query setup stops cleanly instead of blowing the free tier mid-month.
+
 Other knobs: `DATE_POSTED` (`all`/`today`/`3days`/`week`/`month`), `REMOTE_ONLY`,
 `JOB_COUNTRY` + `JOB_LANGUAGE` (e.g. `fr`/`fr`), and `MAX_PAGES` (cursor pages per
 cycle, default `1`; raising it costs one request per extra page, so mind the
-free-tier budget — see [`.env.example`](.env.example)). Today it runs **one query
-per cycle** : searching two unrelated roles at once is on the [roadmap](roadmap.md).
+free-tier budget — see [`.env.example`](.env.example)). For watching several roles
+per cycle, see [Several roles at once](#several-roles-at-once) above.
 
 ## Run locally.
 

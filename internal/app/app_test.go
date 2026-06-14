@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"hireme/internal/config"
-	"hireme/internal/filter"
 	"hireme/internal/jsearch"
 	"hireme/internal/store"
 )
@@ -29,17 +28,28 @@ func (m *mockNotifier) SendText(_ context.Context, t string) error {
 	return nil
 }
 
-// fakeSearcher returns canned jobs and a request count without any network.
+// fakeSearcher returns canned jobs and a request count without any network. If
+// byQuery is set it returns per-query results; otherwise the flat jobs slice.
 type fakeSearcher struct {
 	jobs     []jsearch.Job
+	byQuery  map[string][]jsearch.Job
 	requests int
 	err      error
 	calls    int
+	queries  []string // queries seen, in call order
 }
 
-func (f *fakeSearcher) SearchAll(_ context.Context, _ jsearch.SearchParams, _ int) ([]jsearch.Job, int, error) {
+func (f *fakeSearcher) SearchAll(_ context.Context, p jsearch.SearchParams, _ int) ([]jsearch.Job, int, error) {
 	f.calls++
+	f.queries = append(f.queries, p.Query)
+	if f.byQuery != nil {
+		return f.byQuery[p.Query], f.requests, f.err
+	}
 	return f.jobs, f.requests, f.err
+}
+
+func oneSearch(query string, keywords ...string) []config.Search {
+	return []config.Search{{Query: query, Keywords: keywords}}
 }
 
 // When the month is already at/over budget, a cycle must make no API request
@@ -59,16 +69,10 @@ func TestRunCycle_SkipsAndWarnsWhenBudgetExhausted(t *testing.T) {
 		t.Fatalf("seed quota: %v", err)
 	}
 
-	cfg := &config.Config{
-		Query:         "devops",
-		Keywords:      []string{"devops"},
-		MaxPages:      1,
-		RequestBudget: budget,
-	}
+	cfg := &config.Config{Searches: oneSearch("devops", "devops"), MaxPages: 1, RequestBudget: budget}
 	src := &fakeSearcher{jobs: []jsearch.Job{{JobID: "x", Title: "DevOps"}}, requests: 1}
 	mock := &mockNotifier{}
-	a := New(cfg, src, st, filter.New(cfg.Keywords),
-		mock, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	a := New(cfg, src, st, mock, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	for i := 0; i < 2; i++ {
 		if err := a.runCycle(ctx); err != nil {
@@ -110,11 +114,10 @@ func TestRunCycle_CountsUsageAndWarnsOnCrossing(t *testing.T) {
 		t.Fatalf("seed quota: %v", err)
 	}
 
-	cfg := &config.Config{Query: "devops", Keywords: []string{"devops"}, MaxPages: 2, RequestBudget: budget}
+	cfg := &config.Config{Searches: oneSearch("devops", "devops"), MaxPages: 2, RequestBudget: budget}
 	src := &fakeSearcher{jobs: []jsearch.Job{{JobID: "x", Title: "DevOps"}}, requests: 2} // crosses to exactly budget
 	mock := &mockNotifier{}
-	a := New(cfg, src, st, filter.New(cfg.Keywords),
-		mock, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	a := New(cfg, src, st, mock, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	// Cycle 1: under budget at the top → fetches, records 2, crosses to budget, warns.
 	if err := a.runCycle(ctx); err != nil {
@@ -136,5 +139,92 @@ func TestRunCycle_CountsUsageAndWarnsOnCrossing(t *testing.T) {
 	}
 	if len(mock.texts) != 1 {
 		t.Fatalf("warning must fire once, got %d", len(mock.texts))
+	}
+}
+
+// Each query is filtered by its own keyword set: a DevOps-titled job returned
+// for the React-Native query must be dropped, and both queries run in a cycle.
+func TestRunCycle_PerQueryKeywordFiltering(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer st.Close()
+
+	cfg := &config.Config{
+		Searches: []config.Search{
+			{Query: "devops remote", Keywords: []string{"devops"}},
+			{Query: "react native remote", Keywords: []string{"react native"}},
+		},
+		MaxPages:      1,
+		RequestBudget: 0, // guard off
+	}
+	src := &fakeSearcher{
+		requests: 1,
+		byQuery: map[string][]jsearch.Job{
+			"devops remote":       {{JobID: "a", Title: "Senior DevOps Engineer"}},
+			"react native remote": {{JobID: "b", Title: "React Native Developer"}, {JobID: "c", Title: "DevOps SRE"}},
+		},
+	}
+	mock := &mockNotifier{}
+	a := New(cfg, src, st, mock, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	if err := a.runCycle(ctx); err != nil {
+		t.Fatalf("runCycle: %v", err)
+	}
+	if len(src.queries) != 2 {
+		t.Fatalf("expected both queries run, got %v", src.queries)
+	}
+	// "a" (devops query) and "b" (RN query) push; "c" is a DevOps job returned
+	// for the RN query, so the RN keyword filter must drop it.
+	var ids []string
+	for _, j := range mock.jobs {
+		ids = append(ids, j.JobID)
+	}
+	if len(ids) != 2 || ids[0] != "a" || ids[1] != "b" {
+		t.Fatalf("expected pushes [a b] (c filtered out by RN keywords), got %v", ids)
+	}
+}
+
+// With several queries, the budget is checked before each: once a query pushes
+// usage to the budget, the remaining queries are skipped within the same cycle.
+func TestRunCycle_BudgetStopsRemainingQueries(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer st.Close()
+
+	const budget = 200
+	month := time.Now().UTC().Format("2006-01")
+	if _, err := st.AddRequests(ctx, month, budget-1); err != nil { // one below budget
+		t.Fatalf("seed quota: %v", err)
+	}
+
+	cfg := &config.Config{
+		Searches: []config.Search{
+			{Query: "q1", Keywords: []string{"devops"}},
+			{Query: "q2", Keywords: []string{"devops"}},
+		},
+		MaxPages:      1,
+		RequestBudget: budget,
+	}
+	src := &fakeSearcher{jobs: []jsearch.Job{{JobID: "x", Title: "DevOps"}}, requests: 1}
+	mock := &mockNotifier{}
+	a := New(cfg, src, st, mock, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	if err := a.runCycle(ctx); err != nil {
+		t.Fatalf("runCycle: %v", err)
+	}
+	if src.calls != 1 {
+		t.Fatalf("expected only the first query to run before budget hit, got %d calls (%v)", src.calls, src.queries)
+	}
+	if used, _, _ := st.Quota(ctx, month); used != budget {
+		t.Fatalf("used=%d, want %d", used, budget)
+	}
+	if len(mock.texts) != 1 {
+		t.Fatalf("expected one budget warning, got %d", len(mock.texts))
 	}
 }
